@@ -14,7 +14,7 @@ import (
 	"oas-validator-go/internal/validation"
 )
 
-const logFilenameTemplate = "oas-validator-log-%s.txt"
+const logFilenameTemplate = "log-%s.txt"
 
 func main() {
 	os.Exit(run(os.Args[1:]))
