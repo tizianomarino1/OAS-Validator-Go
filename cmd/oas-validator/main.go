@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"oas-validator-go/internal/cli"
@@ -14,95 +15,71 @@ import (
 	"oas-validator-go/internal/validation"
 )
 
-const logFilenameTemplate = "log-%s.txt"
+const (
+	logFilenameTemplate = "log-%s.txt"
+
+	exitOK           = 0
+	exitGenericError = 1
+	exitMissingFile  = 2
+)
 
 func main() {
-	os.Exit(run(os.Args[1:]))
+	code := run(os.Args[1:])
+	fmt.Println(code + 1)
+	os.Exit(code)
 }
 
 func run(args []string) (code int) {
 	logPath := fmt.Sprintf(logFilenameTemplate, time.Now().Format("20060102-150405"))
 	logFile, err := os.Create(logPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "impossibile creare il file di log:", err)
-		return 1
+		return exitGenericError
 	}
 	defer logFile.Close()
 
 	logger := log.New(logFile, "", log.LstdFlags)
-	logger.Printf("Avvio oas-validator con argomenti: %v", args)
-	defer func() {
-		logger.Printf("Terminazione con codice: %d", code)
-	}()
 
 	opts, err := cli.Parse(args)
 	if err != nil {
-		logger.Printf("Errore durante il parsing delle opzioni: %v", err)
-		fmt.Fprintln(os.Stderr, err)
-		cli.PrintUsage(os.Stderr)
-		printLogHint(os.Stderr, logPath)
-		return 1
+		logError(logger, err)
+		return exitGenericError
 	}
-	logger.Printf("Opzioni ricevute: JSONPath=%s SpecPath=%s SchemaName=%s Path=%s Method=%s", opts.JSONPath, opts.SpecPath, opts.SchemaName, opts.Path, opts.Method)
 
 	if err := files.MustExist(opts.JSONPath, opts.SpecPath); err != nil {
-		logger.Printf("File mancanti: %v", err)
-		fmt.Fprintln(os.Stderr, err)
-		printLogHint(os.Stderr, logPath)
-		return 2
+		logError(logger, err)
+		return exitMissingFile
 	}
-	logger.Println("Entrambi i file sono stati trovati")
 
 	data, err := files.LoadJSON(opts.JSONPath)
 	if err != nil {
-		logger.Printf("Errore caricando il JSON: %v", err)
-		fmt.Fprintln(os.Stderr, err)
-		printLogHint(os.Stderr, logPath)
+		logError(logger, err)
 		if isMissingFileError(err) {
-			return 2
+			return exitMissingFile
 		}
-		return 1
+		return exitGenericError
 	}
-	logger.Println("JSON caricato correttamente")
 
 	doc, err := spec.Load(opts.SpecPath)
 	if err != nil {
-		logger.Printf("Errore caricando la specifica: %v", err)
-		fmt.Fprintln(os.Stderr, err)
-		printLogHint(os.Stderr, logPath)
+		logError(logger, err)
 		if isMissingFileError(err) {
-			return 2
+			return exitMissingFile
 		}
-		return 1
+		return exitGenericError
 	}
-	logger.Println("Specifiche OpenAPI caricate correttamente")
 
 	schema, err := spec.PickSchema(doc, opts.SchemaName, opts.Path, opts.Method)
 	if err != nil {
-		logger.Printf("Errore selezionando lo schema: %v", err)
-		fmt.Fprintln(os.Stderr, "Selezione schema:", err)
-		cli.MaybeSuggest(os.Stdout, doc, opts)
-		printLogHint(os.Stderr, logPath)
-		return 1
+		logError(logger, err)
+		return exitGenericError
 	}
-	logger.Println("Schema selezionato con successo")
 
 	if err := validation.ValidateAgainst(doc, schema, data); err != nil {
-		logger.Printf("Validazione fallita: %v", err)
-		fmt.Fprintln(os.Stderr, "Validazione FALLITA:")
-		fmt.Fprintln(os.Stderr, err)
-		printLogHint(os.Stderr, logPath)
-		return 1
+		logError(logger, err)
+		return exitGenericError
 	}
-	logger.Println("Validazione completata con successo")
 
-	cli.PrintOK(os.Stdout, doc, schema, opts)
-	printLogHint(os.Stdout, logPath)
-	return 0
-}
-
-func printLogHint(w *os.File, path string) {
-	fmt.Fprintf(w, "Dettagli disponibili nel log: %s\n", path)
+	return exitOK
 }
 
 func isMissingFileError(err error) bool {
@@ -117,4 +94,11 @@ func isMissingFileError(err error) bool {
 		return errors.Is(pathErr.Err, fs.ErrNotExist)
 	}
 	return false
+}
+
+func logError(logger *log.Logger, err error) {
+	if logger == nil || err == nil {
+		return
+	}
+	logger.Println(strings.ReplaceAll(err.Error(), "\n", " "))
 }
